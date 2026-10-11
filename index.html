@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Squach Drive</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root { --bg:#0f1115; --fg:#e8eaed; --muted:#9aa0a6; --card:#1a1d24; --line:#2b3039; --accent:#56b4e9; --warn:#e69f00; --bad:#d55e00; --ok:#009e73; }
+  @media (prefers-color-scheme: light) { :root { --bg:#fff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d1d9e0; --accent:#0072b2; --warn:#b36b00; --bad:#b33f00; --ok:#007a5a; } }
+  * { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body { background:var(--bg); color:var(--fg); font:15px/1.35 system-ui, sans-serif; display:flex; flex-direction:column; padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  header { padding:8px 12px; border-bottom:1px solid var(--line); }
+  h1 { font-size:16px; margin:0 0 6px; display:flex; justify-content:space-between; align-items:baseline; }
+  h1 small { color:var(--muted); font-weight:400; font-size:12px; }
+  .pills { display:flex; flex-wrap:wrap; gap:6px; }
+  .pill { padding:3px 9px; border-radius:99px; border:1px solid var(--line); background:var(--card); font-size:12px; }
+  .pill.on { border-color:var(--ok); }
+  .pill.off { border-color:var(--bad); }
+  .bar { display:flex; gap:6px; padding:8px 12px; flex-wrap:wrap; }
+  button, select { font:inherit; padding:9px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button.active { outline:2px solid var(--accent); }
+  button:disabled { opacity:.5; }
+  main { flex:1; min-height:0; position:relative; }
+  .view { position:absolute; inset:0; overflow:auto; display:none; }
+  .view.show { display:block; }
+  #map { width:100%; height:100%; }
+  ul { list-style:none; margin:0; padding:0; }
+  li.det { padding:9px 12px; border-bottom:1px solid var(--line); }
+  li.det .top { display:flex; justify-content:space-between; gap:8px; }
+  li.det .type { font-weight:700; letter-spacing:.3px; }
+  li.det .conf { font-size:12px; color:var(--muted); white-space:nowrap; }
+  li.det .sub { color:var(--muted); font-size:12px; margin-top:2px; word-break:break-word; }
+  li.det.alert { border-left:5px solid var(--bad); background:var(--card); }
+  .empty { padding:24px 12px; color:var(--muted); }
+  .panel { padding:12px; }
+  .panel h2 { font-size:14px; margin:14px 0 6px; }
+  label.row { display:flex; align-items:center; gap:8px; padding:5px 0; }
+  .grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:2px 12px; }
+  .note { color:var(--muted); font-size:12px; }
+  .toast { position:absolute; left:12px; right:12px; bottom:12px; padding:10px 12px; border-radius:8px; background:var(--card); border:1px solid var(--line); display:none; z-index:1000; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Squach Drive <small id="clock"></small></h1>
+  <div class="pills">
+    <span class="pill off" id="pUsb">USB: off</span>
+    <span class="pill off" id="pGps">GPS: off</span>
+    <span class="pill" id="pCount">0 seen</span>
+    <span class="pill" id="pAlerts">0 alerts</span>
+  </div>
+</header>
+<div class="bar">
+  <button class="primary" id="btnStart">Start</button>
+  <button id="btnList" class="active">List</button>
+  <button id="btnMap">Map</button>
+  <button id="btnSet">Settings</button>
+  <button id="btnDemo">Demo</button>
+</div>
+<main>
+  <section class="view show" id="vList"><ul id="list"></ul><div class="empty" id="empty">Nothing yet. Tap Start, plug in the CYD, and drive.</div></section>
+  <section class="view" id="vMap"><div id="map"></div></section>
+  <section class="view" id="vSet"><div class="panel">
+    <h2>Alerts</h2>
+    <label class="row"><input type="checkbox" id="optSound" checked> Beep</label>
+    <label class="row"><input type="checkbox" id="optVibe" checked> Vibrate</label>
+    <label class="row"><input type="checkbox" id="optSpeak" checked> Speak the type</label>
+    <label class="row">Minimum confidence
+      <select id="optConf"><option value="0">Low and up</option><option value="1">Medium and up</option><option value="2">High only</option></select></label>
+    <h2>Alert on these types</h2>
+    <div class="grid" id="typeBoxes"></div>
+    <h2>Data</h2>
+    <div class="bar" style="padding:0">
+      <button id="exCsv">Export CSV</button>
+      <button id="exKml">Export KML</button>
+      <button id="exJson">Export JSON</button>
+      <button id="btnClear">Clear all</button>
+    </div>
+    <p class="note" id="storeInfo"></p>
+    <h2>About</h2>
+    <p class="note">Reads detections the CYD prints over USB, stamps each with this phone's clock and GPS, and keeps everything on this phone only. Nothing is uploaded.</p>
+  </div></section>
+  <div class="toast" id="toast"></div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const CONF = ['LOW', 'MED', 'HIGH'];
+// Okabe-Ito palette; type is always also written out as text, never colour alone.
+const TYPES = {
+  FLOCK:['#d55e00','Flock camera'], AXON:['#0072b2','Axon body cam'], META:['#cc79a7','Smart glasses'], SKIMMER:['#e69f00','Card skimmer'],
+  RAVEN:['#d55e00','Gunshot detector'], AIRTAG:['#56b4e9','AirTag'], DRONE:['#009e73','Drone'], ALPR:['#d55e00','Plate reader'],
+  CAMERA:['#999999','Camera'], SAMSUNG_TAG:['#56b4e9','Samsung tag'], GOOGLE_TAG:['#56b4e9','Google tag'], TILE:['#56b4e9','Tile tracker'],
+  RING:['#999999','Ring camera'], DEAUTH:['#e69f00','Deauth flood'], 'EVIL TWIN':['#e69f00','Evil twin AP'], IBEACON:['#999999','iBeacon'],
+  HACKER:['#cc79a7','Pentest gear'], UNKNOWN:['#999999','Unknown'],
+};
+const ALERT_DEFAULT = new Set(['FLOCK','AXON','META','SKIMMER','RAVEN','AIRTAG','DRONE','ALPR','SAMSUNG_TAG','GOOGLE_TAG','TILE','DEAUTH','EVIL TWIN','HACKER']);
+
+// ---------- tiny IndexedDB wrapper ----------
+const Store = (() => {
+  let db = null;
+  const open = () => new Promise((res, rej) => {
+    const r = indexedDB.open('squach-drive', 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('det', { keyPath: 'id', autoIncrement: true }); r.result.createObjectStore('trk', { keyPath: 'id', autoIncrement: true }); };
+    r.onsuccess = () => { db = r.result; res(); };
+    r.onerror = () => rej(r.error);
+  });
+  const tx = (store, mode, fn) => new Promise((res, rej) => { const t = db.transaction(store, mode); const out = fn(t.objectStore(store)); t.oncomplete = () => res(out && out.result); t.onerror = () => rej(t.error); });
+  return {
+    open, add: (s, v) => db ? tx(s, 'readwrite', (o) => o.add(v)) : Promise.resolve(),
+    all: (s) => db ? tx(s, 'readonly', (o) => o.getAll()) : Promise.resolve([]),
+    clear: (s) => db ? tx(s, 'readwrite', (o) => o.clear()) : Promise.resolve(),
+  };
+})();
+
+// ---------- settings ----------
+const cfgKey = 'squach-drive-cfg';
+const cfg = Object.assign({ sound:true, vibe:true, speak:true, minConf:0, types:[...ALERT_DEFAULT] }, (() => { try { return JSON.parse(localStorage.getItem(cfgKey)) || {}; } catch (e) { return {}; } })());
+const saveCfg = () => { try { localStorage.setItem(cfgKey, JSON.stringify(cfg)); } catch (e) {} };
+
+// ---------- state ----------
+const S = { usb:false, gps:null, pos:null, track:[], dets:[], alerts:0, session:Date.now(), wake:null, demo:false };
+
+// ---------- helpers ----------
+const toast = (m, ms = 3500) => { const t = $('toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(toast._t); toast._t = setTimeout(() => t.style.display = 'none', ms); };
+const pill = (id, text, on) => { const e = $(id); e.textContent = text; e.classList.toggle('on', !!on); e.classList.toggle('off', on === false); };
+const fmtT = (ms) => new Date(ms).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+setInterval(() => { $('clock').textContent = fmtT(Date.now()); }, 1000);
+
+// ---------- audio / alert ----------
+let actx = null;
+const beep = (n = 2) => { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); for (let i = 0; i < n; i++) { const o = actx.createOscillator(), g = actx.createGain(); o.frequency.value = 880; g.gain.value = 0.15; o.connect(g); g.connect(actx.destination); o.start(actx.currentTime + i * 0.25); o.stop(actx.currentTime + i * 0.25 + 0.15); } } catch (e) {} };
+function raiseAlert(d) {
+  S.alerts++; pill('pAlerts', S.alerts + ' alerts', S.alerts ? true : undefined);
+  if (cfg.vibe && navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  if (cfg.sound) beep(d.conf === 'HIGH' ? 3 : 2);
+  if (cfg.speak && 'speechSynthesis' in window) { try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance((TYPES[d.type] || TYPES.UNKNOWN)[1])); } catch (e) {} }
+}
+const wantsAlert = (d) => cfg.types.includes(d.type) && CONF.indexOf(d.conf) >= cfg.minConf;
+
+// ---------- detection handling ----------
+function addDetection(raw) {
+  const p = S.pos;
+  const d = { t: Date.now(), session: S.session, up: raw.up, type: raw.type, conf: raw.conf, mac: raw.mac, rssi: raw.rssi, ch: raw.ch,
+              band: raw.ch === 0 ? 'BLE' : raw.ch > 14 ? '5GHz' : '2.4GHz', vendor: raw.vendor, name: raw.name,
+              lat: p ? p.lat : null, lon: p ? p.lon : null, acc: p ? p.acc : null };
+  d.alert = wantsAlert(d);
+  S.dets.unshift(d); Store.add('det', d);
+  pill('pCount', S.dets.length + ' seen');
+  $('empty').style.display = 'none';
+  const li = document.createElement('li'); li.className = 'det' + (d.alert ? ' alert' : '');
+  const top = document.createElement('div'); top.className = 'top';
+  const ty = document.createElement('span'); ty.className = 'type'; ty.textContent = (d.alert ? '! ' : '') + d.type + ' - ' + (TYPES[d.type] || TYPES.UNKNOWN)[1];
+  const cf = document.createElement('span'); cf.className = 'conf'; cf.textContent = d.conf + ' conf  ' + fmtT(d.t);
+  top.append(ty, cf);
+  const sub = document.createElement('div'); sub.className = 'sub';
+  sub.textContent = [d.mac, d.rssi + ' dBm', d.band + (d.ch ? ' ch' + d.ch : ''), d.vendor, d.name, d.lat == null ? 'no GPS fix' : d.lat.toFixed(5) + ', ' + d.lon.toFixed(5)].filter(Boolean).join('  |  ');
+  li.append(top, sub);
+  const ul = $('list'); ul.prepend(li); while (ul.children.length > 300) ul.lastChild.remove();
+  if (d.alert) raiseAlert(d);
+  mapMarker(d);
+}
+
+// Line parser: @DET,<up_ms>,<TYPE>,<HIGH|MED|LOW>,<mac>,<rssi>,<channel>,<vendor>,<name>
+let lineBuf = '';
+function feed(text) {
+  lineBuf += text;
+  let i;
+  while ((i = lineBuf.indexOf('\n')) >= 0) {
+    const line = lineBuf.slice(0, i).replace(/\r$/, ''); lineBuf = lineBuf.slice(i + 1);
+    const at = line.indexOf('@DET,'); if (at < 0) continue;
+    const f = line.slice(at + 5).split(',');
+    if (f.length < 8) continue;
+    const rssi = parseInt(f[4], 10), ch = parseInt(f[5], 10), up = parseInt(f[0], 10);
+    if (!/^[0-9A-F:]{17}$/.test(f[3]) || Number.isNaN(rssi) || Number.isNaN(ch)) continue;
+    addDetection({ up, type: f[1], conf: f[2], mac: f[3], rssi, ch, vendor: f[6] || '', name: f.slice(7).join(',') });
+  }
+  if (lineBuf.length > 4096) lineBuf = '';
+}
+
+// ---------- map ----------
+let map = null, trackLine = null, meMarker = null, mapReady = false;
+function ensureMap() {
+  if (mapReady || typeof L === 'undefined') return;
+  map = L.map('map', { zoomControl: true }).setView([39.83, -98.58], 4);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
+  trackLine = L.polyline([], { color: '#56b4e9', weight: 3 }).addTo(map);
+  mapReady = true;
+  S.dets.slice().reverse().forEach(mapMarker);
+}
+function mapMarker(d) {
+  if (!mapReady || d.lat == null) return;
+  const col = (TYPES[d.type] || TYPES.UNKNOWN)[0];
+  const r = d.conf === 'HIGH' ? 11 : d.conf === 'MED' ? 8 : 6;
+  const m = L.circleMarker([d.lat, d.lon], { radius: r, color: '#000', weight: d.alert ? 4 : 1, fillColor: col, fillOpacity: .65 }).addTo(map);
+  m.bindPopup('<b>' + esc(d.type) + '</b> ' + esc(d.conf) + '<br>' + esc(d.mac) + '<br>' + esc(d.vendor || '') + ' ' + esc(d.name || '') + '<br>' + esc(new Date(d.t).toLocaleString()));
+}
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+function mapMe() {
+  if (!mapReady || !S.pos) return;
+  const ll = [S.pos.lat, S.pos.lon];
+  if (!meMarker) { meMarker = L.circleMarker(ll, { radius: 7, color: '#fff', weight: 3, fillColor: '#0072b2', fillOpacity: 1 }).addTo(map); map.setView(ll, 15); }
+  else meMarker.setLatLng(ll);
+  trackLine.addLatLng(ll);
+  if (S.follow !== false) map.panTo(ll, { animate: false });
+}
+
+// ---------- GPS ----------
+function startGps() {
+  if (!navigator.geolocation) { toast('This browser has no location support.'); return; }
+  if (S.gps != null) navigator.geolocation.clearWatch(S.gps);
+  S.gps = navigator.geolocation.watchPosition((p) => {
+    S.pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: Math.round(p.coords.accuracy || 0), t: Date.now() };
+    pill('pGps', 'GPS: +/-' + S.pos.acc + ' m', true);
+    const last = S.track[S.track.length - 1];
+    if (!last || Date.now() - last.t > 4000) { const pt = { t: S.pos.t, session: S.session, lat: S.pos.lat, lon: S.pos.lon, acc: S.pos.acc }; S.track.push(pt); Store.add('trk', pt); }
+    mapMe();
+  }, (e) => { pill('pGps', 'GPS: ' + (e.code === 1 ? 'denied' : 'no fix'), false); }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+}
+// Flag the fix stale if it stops updating.
+setInterval(() => { if (S.pos && Date.now() - S.pos.t > 15000) pill('pGps', 'GPS: stale', false); }, 5000);
+
+// ---------- CH340 over WebUSB ----------
+const Ch340 = {
+  dev: null, epIn: null, ifn: 0, run: false,
+  out(request, value, index) { return this.dev.controlTransferOut({ requestType:'vendor', recipient:'device', request, value, index }); },
+  async inn(request, value, index) { const r = await this.dev.controlTransferIn({ requestType:'vendor', recipient:'device', request, value, index }, 2); if (r.status !== 'ok') throw new Error('control in failed'); return new Uint8Array(r.data.buffer); },
+  async setBaud(baud) {
+    let factor = Math.floor(1532620800 / baud), divisor = 3;
+    while (factor > 0xfff0 && divisor > 0) { factor >>= 3; divisor--; }
+    factor = 0x10000 - factor; divisor |= 0x0080;
+    await this.out(0x9a, 0x1312, (factor & 0xff00) | divisor);
+    await this.out(0x9a, 0x0f2c, factor & 0xff);
+  },
+  async init(baud) {
+    let b = await this.inn(0x5f, 0, 0); if (b[1] !== 0) throw new Error('chip init failed');
+    await this.out(0xa1, 0, 0); await this.setBaud(9600);
+    b = await this.inn(0x95, 0x2518, 0); if (b[1] !== 0) throw new Error('chip init failed');
+    await this.out(0x9a, 0x2518, 0x00c3); await this.inn(0x95, 0x0706, 0);
+    await this.out(0xa1, 0x501f, 0xd90a); await this.setBaud(baud);
+    await this.out(0xa4, 0xffff, 0);           // DTR/RTS released so the ESP32 is not reset
+    await this.inn(0x95, 0x0706, 0);
+  },
+  async attach(dev) {
+    await this.close();
+    this.dev = dev; await dev.open();
+    if (dev.configuration === null) await dev.selectConfiguration(1);
+    const iface = dev.configuration.interfaces[dev.configuration.interfaces.length - 1];
+    this.ifn = iface.interfaceNumber; await dev.claimInterface(this.ifn);
+    this.epIn = null;
+    for (const ep of iface.alternate.endpoints) if (ep.type === 'bulk' && ep.direction === 'in') this.epIn = ep.endpointNumber;
+    if (this.epIn == null) throw new Error('no data endpoint');
+    await this.init(2000000);
+    S.usb = true; pill('pUsb', 'USB: connected', true);
+    this.loop();
+  },
+  async loop() {
+    this.run = true; const dec = new TextDecoder();
+    while (this.run && this.dev && this.dev.opened) {
+      try {
+        const r = await this.dev.transferIn(this.epIn, 512);
+        if (r.status === 'ok' && r.data.byteLength) feed(dec.decode(r.data, { stream: true }));
+        else if (r.status === 'stall') await this.dev.clearHalt('in', this.epIn);
+      } catch (e) { break; }
+    }
+    this.lost();
+  },
+  lost() { this.run = false; if (S.usb) { S.usb = false; pill('pUsb', 'USB: lost - replug', false); toast('USB disconnected. Plug the CYD back in.'); } },
+  async close() { this.run = false; try { if (this.dev && this.dev.opened) { await this.dev.releaseInterface(this.ifn); await this.dev.close(); } } catch (e) {} },
+  async pick() { return navigator.usb.requestDevice({ filters: [{ vendorId: 0x1a86 }] }); },
+};
+if (navigator.usb) {
+  navigator.usb.addEventListener('connect', async (e) => { if (e.device.vendorId === 0x1a86 && !S.usb && !S.demo) { try { await Ch340.attach(e.device); } catch (er) {} } });
+  navigator.usb.addEventListener('disconnect', (e) => { if (Ch340.dev === e.device) Ch340.lost(); });
+}
+
+// ---------- wake lock ----------
+async function keepAwake() { try { if (navigator.wakeLock) S.wake = await navigator.wakeLock.request('screen'); } catch (e) {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.started) keepAwake(); });
+
+// ---------- Start ----------
+$('btnStart').onclick = async () => {
+  S.started = true; actx = actx || null; beep(0);
+  startGps(); keepAwake();
+  if (!navigator.usb) { toast('USB not available here. Open the HTTPS address in Chrome.'); return; }
+  try {
+    const known = (await navigator.usb.getDevices()).filter((d) => d.vendorId === 0x1a86);
+    await Ch340.attach(known[0] || await Ch340.pick());
+    toast('Connected. Listening for detections.');
+  } catch (e) { if (e.name !== 'NotFoundError') toast('USB failed: ' + e.message); }
+};
+
+// ---------- demo ----------
+let demoTimer = null, demoPos = { lat: 39.83, lon: -98.58 }, demoStep = 0;
+$('btnDemo').onclick = () => {
+  if (demoTimer) { clearInterval(demoTimer); demoTimer = null; S.demo = false; $('btnDemo').classList.remove('active'); toast('Demo stopped.'); return; }
+  S.demo = true; S.started = true; $('btnDemo').classList.add('active'); toast('Demo: fake detections and a fake drive.');
+  const sample = [
+    ['FLOCK','LOW','24:0A:C4:11:22:33',-71,6,'Flock-ESP32',''], ['FLOCK','HIGH','B4:1E:52:AA:BB:CC',-58,11,'Flock',''],
+    ['AXON','HIGH','00:25:DF:12:34:56',-64,0,'Axon','Axon Body 3'], ['META','MED','F0:99:B6:01:02:03',-77,0,'Meta','Ray-Ban Meta'],
+    ['AIRTAG','MED','D0:03:4B:77:88:99',-69,0,'Apple','AirTag'], ['RING','LOW','54:E0:19:AB:CD:EF',-80,36,'Ring',''],
+    ['IBEACON','LOW','C9:11:22:33:44:55',-85,0,'Apple','iBeacon'],
+  ];
+  demoTimer = setInterval(() => {
+    demoStep++; demoPos.lat += 0.0004; demoPos.lon += 0.0003 * Math.sin(demoStep / 5);
+    S.pos = { lat: demoPos.lat, lon: demoPos.lon, acc: 6, t: Date.now() }; pill('pGps', 'GPS: +/-6 m (demo)', true);
+    S.track.push({ t: S.pos.t, session: S.session, lat: S.pos.lat, lon: S.pos.lon, acc: 6 }); mapMe();
+    pill('pUsb', 'USB: demo', true);
+    if (demoStep % 2 === 0) { const s = sample[Math.floor(Math.random() * sample.length)]; feed('@DET,' + (demoStep * 1000) + ',' + s[0] + ',' + s[1] + ',' + s[2] + ',' + s[3] + ',' + s[4] + ',' + s[5] + ',' + s[6] + '\r\n'); }
+  }, 1200);
+};
+
+// ---------- tabs ----------
+function show(id) { for (const v of ['vList', 'vMap', 'vSet']) $(v).classList.toggle('show', v === id); for (const [b, v] of [['btnList','vList'],['btnMap','vMap'],['btnSet','vSet']]) $(b).classList.toggle('active', v === id);
+  if (id === 'vMap') { ensureMap(); setTimeout(() => map && map.invalidateSize(), 50); if (typeof L === 'undefined') toast('Map needs the internet (phone data) to load.'); } if (id === 'vSet') storeInfo(); }
+$('btnList').onclick = () => show('vList'); $('btnMap').onclick = () => show('vMap'); $('btnSet').onclick = () => show('vSet');
+
+// ---------- settings UI ----------
+for (const t of Object.keys(TYPES)) {
+  if (t === 'UNKNOWN') continue;
+  const l = document.createElement('label'); l.className = 'row';
+  const c = document.createElement('input'); c.type = 'checkbox'; c.checked = cfg.types.includes(t);
+  c.onchange = () => { cfg.types = c.checked ? [...new Set([...cfg.types, t])] : cfg.types.filter((x) => x !== t); saveCfg(); };
+  l.append(c, document.createTextNode(' ' + t)); $('typeBoxes').append(l);
+}
+for (const [id, key] of [['optSound','sound'],['optVibe','vibe'],['optSpeak','speak']]) { $(id).checked = cfg[key]; $(id).onchange = () => { cfg[key] = $(id).checked; saveCfg(); }; }
+$('optConf').value = String(cfg.minConf); $('optConf').onchange = () => { cfg.minConf = parseInt($('optConf').value, 10); saveCfg(); };
+async function storeInfo() { const d = await Store.all('det'), t = await Store.all('trk'); $('storeInfo').textContent = 'Stored on this phone: ' + d.length + ' detections, ' + t.length + ' track points.'; }
+
+// ---------- export ----------
+function download(name, mime, text) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: mime })); a.download = name; document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); }
+const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+const csvCell = (v) => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+$('exCsv').onclick = async () => { const d = await Store.all('det'); const cols = ['t','type','conf','mac','rssi','band','ch','vendor','name','lat','lon','acc','alert'];
+  download('squach-drive-' + stamp() + '.csv', 'text/csv', [cols.join(',')].concat(d.map((r) => cols.map((c) => csvCell(c === 't' ? new Date(r.t).toISOString() : r[c])).join(','))).join('\n')); };
+$('exJson').onclick = async () => download('squach-drive-' + stamp() + '.json', 'application/json', JSON.stringify({ detections: await Store.all('det'), track: await Store.all('trk') }, null, 1));
+$('exKml').onclick = async () => {
+  const d = (await Store.all('det')).filter((r) => r.lat != null), t = await Store.all('trk');
+  const xe = (s) => esc(s == null ? '' : s);
+  const pm = d.map((r) => '<Placemark><name>' + xe(r.type) + ' ' + xe(r.conf) + '</name><description>' + xe([r.mac, r.vendor, r.name, r.rssi + ' dBm', r.band].filter(Boolean).join(' | ')) + '</description><TimeStamp><when>' + new Date(r.t).toISOString() + '</when></TimeStamp><Point><coordinates>' + r.lon + ',' + r.lat + ',0</coordinates></Point></Placemark>').join('');
+  const line = t.length > 1 ? '<Placemark><name>Route</name><LineString><tessellate>1</tessellate><coordinates>' + t.map((p) => p.lon + ',' + p.lat + ',0').join(' ') + '</coordinates></LineString></Placemark>' : '';
+  download('squach-drive-' + stamp() + '.kml', 'application/vnd.google-earth.kml+xml', '<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Squach Drive</name>' + line + pm + '</Document></kml>');
+};
+$('btnClear').onclick = async () => { if (!confirm('Delete every stored detection and track point on this phone?')) return; await Store.clear('det'); await Store.clear('trk'); S.dets = []; S.track = []; S.alerts = 0; $('list').textContent = ''; $('empty').style.display = ''; pill('pCount', '0 seen'); pill('pAlerts', '0 alerts'); storeInfo(); };
+
+Store.open().then(storeInfo).catch(() => toast('Storage unavailable: logs will not be saved.'));
+if (!window.isSecureContext) toast('Not a secure page: USB and GPS will not work. Use the HTTPS address.', 8000);
+</script>
+</body>
+</html>
